@@ -25,9 +25,9 @@ settings = get_settings()
 
 engine = create_engine(
     settings.database_url,
-    pool_pre_ping=True,
-    # echo=True would print every SQL statement to the console.
-    # Useful for debugging, but very noisy in production.
+    pool_pre_ping=True,          # Detects stale connections — critical for Neon's auto-suspend
+    pool_recycle=300,            # Recycle connections every 5 min — Neon times out idle connections
+    connect_args={"sslmode": "require"},  # Neon requires SSL
     echo=settings.debug,
 )
 
