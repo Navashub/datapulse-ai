@@ -70,6 +70,11 @@ async def query_documents(
             document_id=request.document_id,
             top_k=request.top_k,
         )
+        # If the pipeline returns a Pydantic model (or a mock with
+        # `model_dump()`), convert it to a plain dict so FastAPI's
+        # response validation/serialization behaves predictably.
+        if hasattr(response, "model_dump"):
+            response = response.model_dump()
         return response
 
     except ValueError as e:

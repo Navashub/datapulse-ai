@@ -24,8 +24,7 @@ from app.config import get_settings, Settings
 from app.core.chunker import chunk_text, extract_text_from_file
 from app.core.embeddings import embed_batch
 from app.core.vector_store import (
-    get_chroma_client,
-    get_or_create_collection,
+    get_lancedb_table,
     store_chunks,
 )
 from app.db.crud import create_document
@@ -145,10 +144,9 @@ async def ingest_document(
     document_id = str(uuid.uuid4())
 
     try:
-        chroma_client = get_chroma_client()
-        collection = get_or_create_collection(chroma_client)
+        table = get_lancedb_table()
         store_chunks(
-            collection,
+            table,
             chunks=chunks,
             embeddings=embeddings,
             document_id=document_id,

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.db.crud import get_all_documents, get_document_by_id, delete_document
 from app.db.database import get_db
-from app.core.vector_store import get_chroma_client, get_or_create_collection, delete_document_chunks
+from app.core.vector_store import get_lancedb_table, delete_document_chunks
 from app.schemas.schemas import DocumentListResponse, DocumentResponse
 
 logger = logging.getLogger(__name__)
@@ -129,9 +129,8 @@ async def remove_document(
 
     # Phase 1 — delete vectors from ChromaDB
     try:
-        chroma_client = get_chroma_client()
-        collection = get_or_create_collection(chroma_client)
-        delete_document_chunks(collection, document_id)
+        table = get_lancedb_table()
+        delete_document_chunks(table, document_id)
     except Exception as e:
         logger.error(f"ChromaDB deletion failed for {document_id}: {e}")
         raise HTTPException(

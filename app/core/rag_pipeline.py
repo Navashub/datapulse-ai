@@ -36,8 +36,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.core.embeddings import embed_query
 from app.core.vector_store import (
-    get_chroma_client,
-    get_or_create_collection,
+    get_lancedb_table,
     search_similar_chunks,
 )
 from app.db import crud
@@ -140,11 +139,9 @@ def run_rag_pipeline(
 
     # ── STEP 2: RETRIEVE RELEVANT CHUNKS ─────────────────────────────────────
     # Ask ChromaDB: "which stored chunks are most similar to this question?"
-    chroma_client = get_chroma_client()
-    collection = get_or_create_collection(chroma_client)
-
+    table = get_lancedb_table()
     retrieved_chunks = search_similar_chunks(
-        collection,
+        table,
         query_embedding=query_vector,
         top_k=top_k,
         document_id=document_id,

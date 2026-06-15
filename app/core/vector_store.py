@@ -1,89 +1,81 @@
 """
-vector_store.py — ChromaDB interface for storing and retrieving vectors.
+vector_store.py — LanceDB interface for storing and retrieving vectors.
 
-WHAT IS A VECTOR STORE?
-  A regular database stores rows and lets you search by exact values
-  (WHERE name = 'John'). A vector store stores embeddings and lets you
-  search by SIMILARITY — "find me the 4 chunks most similar in meaning
-  to this question."
+We use LanceDB instead of ChromaDB because LanceDB is pure Python —
+no C++ compilation required, works on all platforms including Windows.
 
-  ChromaDB is our vector store. It runs locally (no Docker, no cloud)
-  and persists data to disk — so ingested documents survive restarts.
+The concepts are identical to ChromaDB:
+  - A "table" in LanceDB = a "collection" in ChromaDB
+  - We store vectors + text + metadata
+  - We search by vector similarity (cosine distance)
 
 HOW IT FITS IN THE RAG PIPELINE:
-  Ingest:  chunk → embed → store in ChromaDB (with metadata)
-  Query:   embed question → search ChromaDB → get top-K chunks back
-                                                        ↓
-                                             send to LLM as context
+  Ingest:  chunk → embed → store in LanceDB (with metadata)
+  Query:   embed question → search LanceDB → get top-K chunks back
+                                                      ↓
+                                           send to LLM as context
 """
 
 import logging
-import chromadb
-from chromadb.config import Settings as ChromaSettings
+import os
+import pyarrow as pa
+import lancedb
 
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-
-def get_chroma_client() -> chromadb.ClientAPI:
+# LanceDB table schema — defines the columns in our vector table
+# Every stored chunk has: a vector, the text, and metadata fields
+def get_schema() -> pa.Schema:
     """
-    Create a persistent ChromaDB client.
+    Define the LanceDB table schema using PyArrow.
 
-    PersistentClient saves vectors to disk at chroma_persist_directory.
-    This means ingested documents survive server restarts — critical
-    for a real application.
-
-    Returns:
-        A ChromaDB client instance.
+    The vector dimension (768) matches nomic-embed-text output.
+    If you switch embedding models, update this dimension to match.
     """
     settings = get_settings()
-
-    client = chromadb.PersistentClient(
-        path=settings.chroma_persist_directory,
-        settings=ChromaSettings(
-            # anonymized_telemetry=False stops ChromaDB from sending
-            # usage data to their servers — good practice for privacy
-            anonymized_telemetry=False,
-        ),
-    )
-
-    logger.debug(f"ChromaDB client created at: {settings.chroma_persist_directory}")
-    return client
+    return pa.schema([
+        pa.field("vector",      pa.list_(pa.float32(), 768)),  # embedding vector
+        pa.field("text",        pa.utf8()),                     # original chunk text
+        pa.field("document_id", pa.utf8()),                     # parent document UUID
+        pa.field("filename",    pa.utf8()),                     # original filename
+        pa.field("chunk_index", pa.int32()),                    # position in document
+        pa.field("chunk_id",    pa.utf8()),                     # unique chunk identifier
+    ])
 
 
-def get_or_create_collection(client: chromadb.ClientAPI) -> chromadb.Collection:
+def get_lancedb_table() -> lancedb.table.Table:
     """
-    Get the ChromaDB collection (or create it if it doesn't exist yet).
+    Connect to LanceDB and get (or create) the documents table.
 
-    A ChromaDB collection is like a table — it holds all our vectors
-    together with their metadata and original text.
-
-    We use get_or_create_collection() (not get_collection) so the app
-    starts cleanly on first run without manual setup.
-
-    Args:
-        client: A ChromaDB client instance.
+    LanceDB stores data as files on disk at chroma_persist_directory
+    (we reuse the same config key to avoid adding a new env var).
+    The directory is created automatically if it doesn't exist.
 
     Returns:
-        The ChromaDB collection for DataPulse documents.
+        A LanceDB Table object ready for reads and writes.
     """
     settings = get_settings()
+    db_path = settings.chroma_persist_directory  # reusing config key
+    table_name = settings.chroma_collection_name
 
-    collection = client.get_or_create_collection(
-        name=settings.chroma_collection_name,
-        # cosine distance measures the ANGLE between vectors —
-        # better than euclidean distance for text similarity because
-        # it's not affected by the length of the text
-        metadata={"hnsw:space": "cosine"},
-    )
+    # Connect to local LanceDB (creates folder if needed)
+    db = lancedb.connect(db_path)
 
-    logger.debug(f"Using ChromaDB collection: {settings.chroma_collection_name}")
-    return collection
+    # Get existing table or create a new one with our schema
+    if table_name in db.table_names():
+        table = db.open_table(table_name)
+        logger.debug(f"Opened existing LanceDB table: {table_name}")
+    else:
+        table = db.create_table(table_name, schema=get_schema())
+        logger.debug(f"Created new LanceDB table: {table_name}")
+
+    return table
 
 
 def store_chunks(
-    collection: chromadb.Collection,
+    table: lancedb.table.Table,
     *,
     chunks: list[str],
     embeddings: list[list[float]],
@@ -91,26 +83,28 @@ def store_chunks(
     filename: str,
 ) -> int:
     """
-    Store text chunks and their embeddings in ChromaDB.
+    Store text chunks and their embeddings in LanceDB.
 
-    Each chunk is stored with:
-      - A unique ID          : "doc_id::chunk_0", "doc_id::chunk_1", etc.
-      - Its embedding vector : the numeric representation of its meaning
-      - Its original text    : so we can return it in query responses
-      - Metadata             : document_id and filename for filtering
+    Each chunk is stored as one row with:
+      - vector      : the embedding (list of 768 floats)
+      - text        : the original chunk text
+      - document_id : links back to the PostgreSQL Document record
+      - filename    : shown in query responses as the source
+      - chunk_index : position within the document
+      - chunk_id    : unique ID for this specific chunk
 
     Args:
-        collection:   The ChromaDB collection to store into.
-        chunks:       List of text strings (from chunker.py).
-        embeddings:   List of vectors (from embeddings.py), same order as chunks.
-        document_id:  UUID of the parent Document in PostgreSQL.
-        filename:     Original filename — stored as metadata for display.
+        table:       LanceDB table to write into.
+        chunks:      List of text strings from chunker.py.
+        embeddings:  List of vectors from embeddings.py (same order).
+        document_id: UUID of the parent Document in PostgreSQL.
+        filename:    Original filename for display in responses.
 
     Returns:
         Number of chunks stored.
 
     Raises:
-        ValueError: If chunks and embeddings lists have different lengths.
+        ValueError: If chunks and embeddings have different lengths.
     """
     if len(chunks) != len(embeddings):
         raise ValueError(
@@ -121,107 +115,96 @@ def store_chunks(
         logger.warning(f"No chunks to store for document {document_id}")
         return 0
 
-    # Build parallel lists — ChromaDB's add() takes lists, not dicts
-    ids = [f"{document_id}::chunk_{i}" for i in range(len(chunks))]
-
-    metadatas = [
+    # Build list of row dicts — LanceDB accepts a list of dicts
+    rows = [
         {
+            "vector":      [float(v) for v in embeddings[i]],
+            "text":        chunks[i],
             "document_id": document_id,
-            "filename": filename,
+            "filename":    filename,
             "chunk_index": i,
+            "chunk_id":    f"{document_id}::chunk_{i}",
         }
         for i in range(len(chunks))
     ]
 
-    collection.add(
-        ids=ids,
-        embeddings=embeddings,
-        documents=chunks,       # "documents" here means the raw text — ChromaDB's terminology
-        metadatas=metadatas,
-    )
+    table.add(rows)
 
-    logger.info(f"Stored {len(chunks)} chunks in ChromaDB for document {document_id}")
+    logger.info(f"Stored {len(chunks)} chunks in LanceDB for document {document_id}")
     return len(chunks)
 
 
 def search_similar_chunks(
-    collection: chromadb.Collection,
+    table: lancedb.table.Table,
     *,
     query_embedding: list[float],
     top_k: int = 4,
     document_id: str | None = None,
 ) -> list[dict]:
     """
-    Find the top-K most semantically similar chunks to a query.
+    Find the top-K most semantically similar chunks to a query vector.
 
-    This is the RETRIEVAL step in RAG (Retrieval Augmented Generation).
-    We convert the question into a vector, then ask ChromaDB:
-    "Which stored vectors are closest in meaning to this one?"
+    This is the RETRIEVAL step in RAG. We convert the question into
+    a vector, then ask LanceDB: 'Which stored vectors are closest
+    in meaning to this one?'
 
     Args:
-        collection:      The ChromaDB collection to search.
+        table:           LanceDB table to search.
         query_embedding: The embedded question vector.
         top_k:           How many chunks to return.
-        document_id:     If provided, search only within this document.
-                         If None, search across all documents.
+        document_id:     If set, filter results to this document only.
 
     Returns:
-        List of dicts, each with keys:
-          - text         : the chunk's original text
-          - document_id  : which document it came from
-          - filename     : original filename for display
-          - chunk_index  : position in the original document
-          - distance     : similarity score (lower = more similar for cosine)
+        List of dicts with keys: text, document_id, filename,
+        chunk_index, distance.
     """
-    # Build an optional filter — ChromaDB calls these "where" clauses
-    # If document_id is provided, only return chunks from that document
-    where_filter = {"document_id": document_id} if document_id else None
+    query_vector = [float(v) for v in query_embedding]
 
-    query_params = {
-        "query_embeddings": [query_embedding],
-        "n_results": top_k,
-        "include": ["documents", "metadatas", "distances"],
-    }
+    # Build the search query
+    search = (
+        table.search(query_vector)
+             .limit(top_k)
+             .select(["text", "document_id", "filename", "chunk_index"])
+    )
 
-    # Only add the where clause if we're filtering — passing where=None errors
-    if where_filter:
-        query_params["where"] = where_filter
+    # Apply document filter if provided
+    if document_id:
+        search = search.where(f"document_id = '{document_id}'")
 
-    results = collection.query(**query_params)
+    results = search.to_list()
 
-    # ChromaDB returns parallel lists — zip them into a readable structure
-    chunks_out = []
-    documents = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
-    distances = results.get("distances", [[]])[0]
-
-    for text, meta, distance in zip(documents, metadatas, distances):
-        chunks_out.append({
-            "text": text,
-            "document_id": meta.get("document_id", ""),
-            "filename": meta.get("filename", ""),
-            "chunk_index": meta.get("chunk_index", 0),
-            "distance": round(distance, 4),
-        })
+    chunks_out = [
+        {
+            "text":        row["text"],
+            "document_id": row["document_id"],
+            "filename":    row["filename"],
+            "chunk_index": row["chunk_index"],
+            "distance":    round(row.get("_distance", 0.0), 4),
+        }
+        for row in results
+    ]
 
     logger.info(
-        f"ChromaDB search returned {len(chunks_out)} chunks "
+        f"LanceDB search returned {len(chunks_out)} chunks "
         f"(top_k={top_k}, filtered_by_doc={document_id is not None})"
     )
     return chunks_out
 
 
-def delete_document_chunks(collection: chromadb.Collection, document_id: str) -> None:
+def delete_document_chunks(
+    table: lancedb.table.Table,
+    document_id: str,
+) -> None:
     """
-    Delete all chunks belonging to a specific document from ChromaDB.
+    Delete all chunks belonging to a specific document.
 
-    Called when a document is deleted via the API — we must clean up
-    both PostgreSQL (the metadata) AND ChromaDB (the vectors).
-    Leaving orphaned vectors wastes space and pollutes search results.
+    Called when a document is deleted via DELETE /documents/{id}.
+    We must clean up vectors here to prevent orphaned data polluting
+    future search results.
 
     Args:
-        collection:  The ChromaDB collection to delete from.
+        table:       LanceDB table to delete from.
         document_id: The document whose chunks should be removed.
     """
-    collection.delete(where={"document_id": document_id})
-    logger.info(f"Deleted all ChromaDB chunks for document {document_id}")
+    table.delete(f"document_id = '{document_id}'")
+    logger.info(f"Deleted all LanceDB chunks for document {document_id}")
