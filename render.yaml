@@ -2,6 +2,7 @@ services:
   - type: web
     name: datapulse-ai
     runtime: python
+    pythonVersion: "3.11.9"
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -16,8 +17,8 @@ services:
       - key: CHROMA_COLLECTION_NAME
         value: datapulse_documents
       - key: RAG_TOP_K
-        value: 4
+        value: "4"
       - key: CHUNK_SIZE
-        value: 500
+        value: "500"
       - key: CHUNK_OVERLAP
-        value: 50
+        value: "50"
