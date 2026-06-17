@@ -14,6 +14,7 @@ psycopg2-binary==2.9.10        # PostgreSQL driver
 
 # ── Vector Database ───────────────────────────────────────────────────────────
 chromadb==0.4.24
+lancedb==0.6.0
 
 # ── Ollama (local LLM + embeddings) ───────────────────────────────────────────
 ollama==0.4.4                  # Official Ollama Python SDK
@@ -30,3 +31,5 @@ pytest==8.3.4
 pytest-asyncio==0.24.0
 groq==0.9.0
            
+# ── AI — Embeddings (lightweight, runs on free tier) ───────────
+sentence-transformers==3.0.1
