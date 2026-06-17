@@ -36,7 +36,7 @@ def get_schema() -> pa.Schema:
     """
     settings = get_settings()
     return pa.schema([
-        pa.field("vector",      pa.list_(pa.float32(), 768)),  # embedding vector
+        pa.field("vector",      pa.list_(pa.float32(), 384)),  # embedding vector
         pa.field("text",        pa.utf8()),                     # original chunk text
         pa.field("document_id", pa.utf8()),                     # parent document UUID
         pa.field("filename",    pa.utf8()),                     # original filename

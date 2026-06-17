@@ -30,7 +30,7 @@ import logging
 import time
 import uuid
 
-from ollama import Client, ResponseError
+# from ollama import Client, ResponseError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -79,18 +79,18 @@ def build_rag_prompt(question: str, context_chunks: list[dict]) -> str:
     # The system-style instruction is baked into the user prompt here
     # because some Ollama models respond better to single-turn prompts
     prompt = f"""You are a helpful document assistant. Answer the user's question 
-using ONLY the context provided below. Do not use outside knowledge.
+    using ONLY the context provided below. Do not use outside knowledge.
 
-If the context does not contain enough information to answer the question, 
-say: "I could not find a clear answer in the provided documents."
+    If the context does not contain enough information to answer the question, 
+    say: "I could not find a clear answer in the provided documents."
 
-CONTEXT:
-{context_text}
+    CONTEXT:
+    {context_text}
 
-QUESTION:
-{question}
+    QUESTION:
+    {question}
 
-ANSWER:"""
+    ANSWER:"""
 
     return prompt
 
@@ -161,34 +161,26 @@ def run_rag_pipeline(
     # Inject the retrieved chunks into the prompt as context
     prompt = build_rag_prompt(question, retrieved_chunks)
 
-    # ── STEP 4: GENERATE AN ANSWER ────────────────────────────────────────────
-    # Send the augmented prompt to the local Ollama LLM
-    ollama_client = Client(host=settings.ollama_base_url)
-
+    # ── STEP 4: GENERATE AN ANSWER VIA GROQ ──────────────────────────
+    # Groq hosts llama3 models in the cloud — same model family as Ollama
+    # but responses arrive in 1-2 seconds instead of 10-15 seconds.
     try:
-        logger.info(f"Sending prompt to Ollama model: {settings.ollama_chat_model}")
-        response = ollama_client.chat(
-            model=settings.ollama_chat_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-        )
-        answer = response["message"]["content"].strip()
+        from groq import Groq
+        groq_client = Groq(api_key=settings.groq_api_key)
 
-    except ResponseError as e:
-        raise RuntimeError(
-            f"Ollama chat failed. "
-            f"Make sure you have run: ollama pull {settings.ollama_chat_model}\n"
-            f"Error: {e}"
-        ) from e
+        logger.info(f"Sending prompt to Groq model: {settings.groq_model}")
+
+        completion = groq_client.chat.completions.create(
+            model=settings.groq_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,   # Lower temperature = more factual, less creative
+            max_tokens=1024,
+        )
+        answer = completion.choices[0].message.content.strip()
 
     except Exception as e:
         raise RuntimeError(
-            f"Could not connect to Ollama at {settings.ollama_base_url}. "
-            f"Make sure Ollama is running: ollama serve\n"
+            f"Groq API call failed. Check your GROQ_API_KEY in .env\n"
             f"Error: {e}"
         ) from e
 
@@ -230,5 +222,5 @@ def run_rag_pipeline(
         sources=sources,
         chunks_retrieved=len(retrieved_chunks),
         response_time_seconds=round(elapsed, 3),
-        model_used=settings.ollama_chat_model,
+        model_used=settings.groq_model,
     )

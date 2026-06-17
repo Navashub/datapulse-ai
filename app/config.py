@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     # How many characters consecutive chunks share.
     # Overlap prevents answers being cut off at chunk boundaries.
     chunk_overlap: int = 50
+    # ── Groq API (replaces Ollama for cloud deployment) ───────────────────────────
+    groq_api_key: str = ""
+    groq_model: str = "llama3-8b-8192"      # same llama3 family, runs on Groq cloud
+    groq_embedding_model: str = "nomic-embed-text"  # still use Ollama for embeddings locally
+                                                    # or switch to a cloud option
 
     # Tell pydantic-settings to load from a .env file automatically.
     # extra="ignore" means unknown variables in .env don't cause errors —
