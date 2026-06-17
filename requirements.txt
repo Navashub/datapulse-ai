@@ -5,7 +5,7 @@ uvicorn[standard]==0.32.1
 # ── Data Validation & Settings ─────────────────────────────────
 pydantic==2.10.3
 pydantic-settings==2.6.1
-pydantic-core==2.27.2
+
 python-multipart==0.0.12
 
 # ── Database ───────────────────────────────────────────────────
